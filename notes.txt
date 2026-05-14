@@ -1,0 +1,15 @@
+Google Docs: collaborative editing system.
+
+1.  a)Functional requirements:
+able to perform CRUD operations, multiple user concurrency (upto 100 users) in a single file while updating, updates should be visible to all, cursor position to avoid conflicts, 100kb<=document size<100gb or more .
+    b)Non-Functional requirements:
+millions of documents, latency <=200ms, document should stay consistent amongst all its local users.
+
+2. API/ Database designs:
+POST/api/documents
+GET/api/documents/{documentId}
+PUT/api/documents/{documentId}
+Ws/api/documents/{documentId}/collaborate
+
+3. High level designs:
+4. Deep dives:
