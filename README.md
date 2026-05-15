@@ -56,8 +56,6 @@ npx wrangler deploy
 
 ---
 
-## Notes
-
 - No login required — anyone with the document URL can edit it
 - Free Render instances sleep after inactivity; first load may take ~50 seconds
 
