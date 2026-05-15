@@ -28,7 +28,7 @@ function HomePage() {
   useEffect(() => {
 
     fetch(
-      'http://localhost:8080/documents'
+      'http://https://syncspace-uw3k.onrender.com//documents'
     )
 
       .then(res => res.json())

@@ -104,7 +104,7 @@ function Editor({
   useEffect(() => {
 
     const socket = new WebSocket(
-      `ws://localhost:8080/ws?room=${roomId}`
+      `ws://https://syncspace-uw3k.onrender.com//ws?room=${roomId}`
     )
 
     socketRef.current = socket
@@ -335,7 +335,7 @@ function LoadDocumentPlugin({
     editorRef.current = editor
 
     fetch(
-      `http://localhost:8080/load?roomId=${roomId}`
+      `https://syncspace-uw3k.onrender.com/load?roomId=${roomId}`
     )
 
       .then(res => res.json())
@@ -466,7 +466,7 @@ function EditorContent({
         if (!content) return
 
         fetch(
-          'http://localhost:8080/save',
+          'https://syncspace-uw3k.onrender.com/save',
           {
 
             method: 'POST',
