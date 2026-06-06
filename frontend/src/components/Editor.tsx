@@ -104,7 +104,7 @@ function Editor({
   useEffect(() => {
 
     const socket = new WebSocket(
-      `ws://https://syncspace-uw3k.onrender.com//ws?room=${roomId}`
+      `wss://syncspace-uw3k.onrender.com/ws?room=${roomId}`
     )
 
     socketRef.current = socket
