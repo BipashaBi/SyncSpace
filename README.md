@@ -16,9 +16,10 @@
 - **Typing indicators** — know the moment a collaborator starts typing.
 - **Continuous autosave** — edits are saved to the database in the background; there's no save button to remember.
 - **Recovery after refresh** — reload or reopen the tab and the latest version loads straight back.
-- **Shareable link, no login** — anyone with the document URL can jump in and edit.
 - **Rich-text editing** — powered by the Lexical editor framework.
+- (Yet to develop)
 - **Export to PDF & DOCX** — turn any document into a downloadable file to share or print.
+- **Shareable link, no login** — anyone with the document URL can jump in and edit.
 
 ---
 
