@@ -39,7 +39,8 @@ Each client runs a React + Lexical editor that turns every keystroke into a stru
 
 On the backend, a **Go** server groups everyone editing the same document into a *room*. Its broadcast engine relays each change to every other member of that room, and writes the document to **MongoDB** so it survives a refresh and can be reloaded later.
 
-<img src="docs/architecture.png" alt="SyncSpace architecture diagram" width="820" />
+
+<img width="2363" height="1173" alt="architecture" src="https://github.com/user-attachments/assets/7c5b1756-e1f9-4021-af5f-79067b3d3c42" />
 
 ---
 
