@@ -21,8 +21,16 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+// Client owns its connection. All writes go through Send —
+// a single writer goroutine per client — because gorilla/websocket
+// does not allow concurrent writes on one connection.
+type Client struct {
+	Conn *websocket.Conn
+	Send chan []byte
+}
+
 type Room struct {
-	Clients map[*websocket.Conn]bool
+	Clients map[*Client]bool
 	Mutex   sync.Mutex
 }
 
@@ -32,192 +40,221 @@ type Message struct {
 	Count   int         `json:"count,omitempty"`
 }
 
-var rooms = make(map[string]*Room)
+// FIX: the rooms map itself needs a lock. Previously two clients
+// connecting at once could write to this map concurrently, which
+// panics and kills the whole server.
+var (
+	rooms      = make(map[string]*Room)
+	roomsMutex sync.RWMutex
+)
 
 func getRoom(roomID string) *Room {
+	roomsMutex.RLock()
+	room, exists := rooms[roomID]
+	roomsMutex.RUnlock()
 
+	if exists {
+		return room
+	}
+
+	roomsMutex.Lock()
+	defer roomsMutex.Unlock()
+
+	// Re-check: another goroutine may have created it between locks.
 	if room, exists := rooms[roomID]; exists {
 		return room
 	}
 
-	room := &Room{
-		Clients: make(map[*websocket.Conn]bool),
+	room = &Room{
+		Clients: make(map[*Client]bool),
 	}
-
 	rooms[roomID] = room
-
 	return room
 }
 
-func handleConnections(
-	w http.ResponseWriter,
-	r *http.Request,
-) {
-
-	roomID := r.URL.Query().Get("room")
-
-	if roomID == "" {
-		roomID = "default"
-	}
-
-	ws, err := upgrader.Upgrade(w, r, nil)
-
-	if err != nil {
-		log.Println(err)
-		return
-	}
-
-	defer ws.Close()
-
-	room := getRoom(roomID)
-
+// removeClient detaches a client from a room and deletes the room
+// if it's now empty (previously rooms leaked forever).
+func removeClient(roomID string, room *Room, c *Client) {
 	room.Mutex.Lock()
-	room.Clients[ws] = true
+	if _, ok := room.Clients[c]; ok {
+		delete(room.Clients, c)
+		close(c.Send)
+	}
+	empty := len(room.Clients) == 0
 	room.Mutex.Unlock()
 
-	fmt.Println("Client connected to room:", roomID)
-
-	broadcastUserCount(room)
-
-	for {
-
-		_, rawMsg, err := ws.ReadMessage()
-
-		if err != nil {
-
-			fmt.Println("Client disconnected")
-
+	if empty {
+		roomsMutex.Lock()
+		if r, ok := rooms[roomID]; ok && r == room {
+			// Re-check emptiness under the room lock to avoid
+			// deleting a room that just gained a client.
 			room.Mutex.Lock()
-			delete(room.Clients, ws)
+			if len(room.Clients) == 0 {
+				delete(rooms, roomID)
+			}
 			room.Mutex.Unlock()
-
-			broadcastUserCount(room)
-
-			break
 		}
-
-		var message Message
-
-		err = json.Unmarshal(rawMsg, &message)
-
-		if err != nil {
-
-			fmt.Println("Invalid message")
-
-			continue
-		}
-
-		fmt.Println(
-			"Received message:",
-			message.Type,
-			message.Content,
-		)
-
-		broadcast(room, ws, rawMsg)
+		roomsMutex.Unlock()
 	}
 }
 
-func broadcast(
-	room *Room,
-	sender *websocket.Conn,
-	message []byte,
-) {
+// writePump is the ONLY place that writes to a connection.
+// It also sends periodic pings so idle connections aren't
+// silently dropped by the host's proxy.
+func (c *Client) writePump() {
+	ticker := time.NewTicker(45 * time.Second)
+	defer func() {
+		ticker.Stop()
+		c.Conn.Close()
+	}()
 
-	room.Mutex.Lock()
-	defer room.Mutex.Unlock()
-
-	for client := range room.Clients {
-
-		if client != sender {
-
-			err := client.WriteMessage(
-				websocket.TextMessage,
-				message,
-			)
-
-			if err != nil {
-
-				client.Close()
-
-				delete(room.Clients, client)
+	for {
+		select {
+		case msg, ok := <-c.Send:
+			if !ok {
+				c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+			c.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := c.Conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+				return
+			}
+		case <-ticker.C:
+			c.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := c.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
 			}
 		}
 	}
 }
 
-func broadcastUserCount(room *Room) {
-
-	count := len(room.Clients)
-
-	message := Message{
-		Type:  "users",
-		Count: count,
+func handleConnections(w http.ResponseWriter, r *http.Request) {
+	roomID := r.URL.Query().Get("room")
+	if roomID == "" {
+		roomID = "default"
 	}
 
-	jsonMsg, _ := json.Marshal(message)
+	ws, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+
+	client := &Client{
+		Conn: ws,
+		// Buffered: broadcast never blocks on a slow client.
+		Send: make(chan []byte, 256),
+	}
+
+	room := getRoom(roomID)
+
+	room.Mutex.Lock()
+	room.Clients[client] = true
+	room.Mutex.Unlock()
+
+	go client.writePump()
+
+	log.Println("Client connected to room:", roomID)
+	broadcastUserCount(room)
+
+	// Keep the connection alive as long as pongs arrive.
+	ws.SetReadDeadline(time.Now().Add(90 * time.Second))
+	ws.SetPongHandler(func(string) error {
+		ws.SetReadDeadline(time.Now().Add(90 * time.Second))
+		return nil
+	})
+
+	defer func() {
+		removeClient(roomID, room, client)
+		ws.Close()
+		broadcastUserCount(room)
+		log.Println("Client disconnected from room:", roomID)
+	}()
+
+	for {
+		_, rawMsg, err := ws.ReadMessage()
+		if err != nil {
+			return
+		}
+
+		var message Message
+		if err := json.Unmarshal(rawMsg, &message); err != nil {
+			log.Println("Invalid message")
+			continue
+		}
+
+		broadcast(room, client, rawMsg)
+	}
+}
+
+// FIX: broadcast no longer performs network writes while holding
+// the room lock. It snapshots nothing — it just pushes into each
+// client's buffered channel. A slow client can no longer block
+// every other client in the room (head-of-line blocking).
+func broadcast(room *Room, sender *Client, message []byte) {
+	room.Mutex.Lock()
+	defer room.Mutex.Unlock()
 
 	for client := range room.Clients {
-
-		err := client.WriteMessage(
-			websocket.TextMessage,
-			jsonMsg,
-		)
-
-		if err != nil {
-
-			client.Close()
-
+		if client == sender {
+			continue
+		}
+		select {
+		case client.Send <- message:
+		default:
+			// Client's buffer is full — it's too slow or dead.
+			// Drop it rather than stalling the room.
 			delete(room.Clients, client)
+			close(client.Send)
 		}
 	}
 }
 
-func saveDocument(
-	w http.ResponseWriter,
-	r *http.Request,
-) {
+// FIX: previously read and mutated room.Clients with NO lock,
+// racing against broadcast() — a panic waiting to happen. Now it
+// locks, and writes go through the same per-client channel.
+func broadcastUserCount(room *Room) {
+	room.Mutex.Lock()
+	defer room.Mutex.Unlock()
 
-	// FIX: Decode into a plain map first so nothing gets lost
-	// when Content is a nested JSON object (Lexical editor state).
-	// Decoding into the Document struct with interface{} works too,
-	// but using a raw map removes any struct-tag ambiguity.
+	message := Message{
+		Type:  "users",
+		Count: len(room.Clients),
+	}
+	jsonMsg, _ := json.Marshal(message)
+
+	for client := range room.Clients {
+		select {
+		case client.Send <- jsonMsg:
+		default:
+			delete(room.Clients, client)
+			close(client.Send)
+		}
+	}
+}
+
+func saveDocument(w http.ResponseWriter, r *http.Request) {
 	var body map[string]interface{}
-
-	err := json.NewDecoder(r.Body).Decode(&body)
-
-	if err != nil {
-		fmt.Println("Decode error:", err)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
 	}
 
 	roomID, _ := body["roomId"].(string)
 	title, _ := body["title"].(string)
-	content := body["content"] // interface{} — preserves the full nested object
-
-	fmt.Println("Save request — roomId:", roomID)
-	fmt.Println("Save request — title:", title)
-	fmt.Println("Save request — content nil?", content == nil)
+	content := body["content"]
 
 	if roomID == "" {
 		http.Error(w, "roomId is required", 400)
 		return
 	}
 
-	collection := mongoClient.
-		Database("google_docs").
-		Collection("documents")
+	collection := mongoClient.Database("google_docs").Collection("documents")
 
-	filter := bson.M{
-		"roomId": roomID,
-	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
 
-	// FIX: Use upsert:true so a single operation handles both
-	// insert (new doc) and update (existing doc) correctly.
-	// Your old code did UpdateOne then a separate InsertOne, which
-	// could race and also never set roomId on the inserted doc.
 	upsertOpts := options.Update().SetUpsert(true)
-
 	update := bson.M{
 		"$set": bson.M{
 			"roomId":    roomID,
@@ -227,195 +264,112 @@ func saveDocument(
 		},
 	}
 
-	result, err := collection.UpdateOne(
-		context.TODO(),
-		filter,
-		update,
-		upsertOpts,
-	)
-
-	if err != nil {
-		fmt.Println("MongoDB save error:", err)
+	if _, err := collection.UpdateOne(ctx, bson.M{"roomId": roomID}, update, upsertOpts); err != nil {
+		log.Println("MongoDB save error:", err)
 		http.Error(w, err.Error(), 500)
 		return
 	}
 
-	fmt.Println("Matched:", result.MatchedCount,
-		"| Modified:", result.ModifiedCount,
-		"| Upserted:", result.UpsertedCount)
-
 	w.Write([]byte("saved"))
 }
 
-func loadDocument(
-	w http.ResponseWriter,
-	r *http.Request,
-) {
-
+func loadDocument(w http.ResponseWriter, r *http.Request) {
 	roomID := r.URL.Query().Get("roomId")
 
-	fmt.Println("Load request — roomId:", roomID)
+	collection := mongoClient.Database("google_docs").Collection("documents")
 
-	collection := mongoClient.
-		Database("google_docs").
-		Collection("documents")
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
 
-	filter := bson.M{
-		"roomId": roomID,
-	}
-
-	// FIX: Decode into bson.M (raw map) instead of the Document
-	// struct. When Content is a nested BSON document, decoding into
-	// interface{} on the struct can produce bson.D (ordered array of
-	// key-value pairs) instead of map[string]interface{}, which the
-	// frontend can't use. A raw map decodes content correctly.
 	var doc bson.M
-
-	err := collection.FindOne(
-		context.TODO(),
-		filter,
-	).Decode(&doc)
-
-	if err != nil {
-		fmt.Println("Load error:", err)
+	if err := collection.FindOne(ctx, bson.M{"roomId": roomID}).Decode(&doc); err != nil {
 		http.Error(w, "Document not found", 404)
 		return
 	}
 
-	// Convert ObjectID to string so JSON encoding doesn't break
-	if oid, ok := doc["_id"].(interface{}); ok {
+	if oid, ok := doc["_id"]; ok {
 		doc["id"] = fmt.Sprintf("%v", oid)
 		delete(doc, "_id")
 	}
-
-	fmt.Println("Loaded doc — title:", doc["title"])
-	fmt.Println("Loaded doc — content nil?", doc["content"] == nil)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(doc)
 }
 
-func enableCors(
-	next http.HandlerFunc,
-) http.HandlerFunc {
+// FIX: the homepage list previously downloaded EVERY document's
+// full content. Projection returns only what the list displays.
+func getDocuments(w http.ResponseWriter, r *http.Request) {
+	collection := mongoClient.Database("google_docs").Collection("documents")
 
-	return func(
-		w http.ResponseWriter,
-		r *http.Request,
-	) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
 
-		w.Header().Set(
-			"Access-Control-Allow-Origin",
-			"*",
-		)
+	findOpts := options.Find().
+		SetProjection(bson.M{
+			"roomId":    1,
+			"title":     1,
+			"updatedAt": 1,
+		}).
+		SetSort(bson.M{"updatedAt": -1})
 
-		w.Header().Set(
-			"Access-Control-Allow-Headers",
-			"Content-Type",
-		)
-
-		w.Header().Set(
-			"Access-Control-Allow-Methods",
-			"GET, POST, OPTIONS",
-		)
-
-		if r.Method == "OPTIONS" {
-			return
-		}
-
-		next(w, r)
-	}
-}
-
-func getDocuments(
-	w http.ResponseWriter,
-	r *http.Request,
-) {
-
-	collection := mongoClient.
-		Database("google_docs").
-		Collection("documents")
-
-	cursor, err := collection.Find(
-		context.TODO(),
-		bson.M{},
-	)
-
+	cursor, err := collection.Find(ctx, bson.M{}, findOpts)
 	if err != nil {
-
-		http.Error(
-			w,
-			err.Error(),
-			500,
-		)
-
+		http.Error(w, err.Error(), 500)
 		return
 	}
 
 	var documents []bson.M
-
-	err = cursor.All(
-		context.TODO(),
-		&documents,
-	)
-
-	if err != nil {
-
-		http.Error(
-			w,
-			err.Error(),
-			500,
-		)
-
+	if err := cursor.All(ctx, &documents); err != nil {
+		http.Error(w, err.Error(), 500)
 		return
+	}
+
+	for _, doc := range documents {
+		if oid, ok := doc["_id"]; ok {
+			doc["id"] = fmt.Sprintf("%v", oid)
+			delete(doc, "_id")
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(documents)
 }
 
-func main() {
+func enableCors(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 
+		if r.Method == "OPTIONS" {
+			return
+		}
+		next(w, r)
+	}
+}
+
+// Lightweight endpoint for uptime pings / warm-up checks.
+func healthCheck(w http.ResponseWriter, r *http.Request) {
+	w.Write([]byte("ok"))
+}
+
+func main() {
 	connectMongo()
 
-	http.HandleFunc(
-		"/ws",
-		enableCors(handleConnections),
-	)
-
-	http.HandleFunc(
-		"/save",
-		enableCors(saveDocument),
-	)
-
-	http.HandleFunc(
-		"/load",
-		enableCors(loadDocument),
-	)
-
-	http.HandleFunc(
-		"/documents",
-		enableCors(getDocuments),
-	)
+	http.HandleFunc("/ws", handleConnections)
+	http.HandleFunc("/save", enableCors(saveDocument))
+	http.HandleFunc("/load", enableCors(loadDocument))
+	http.HandleFunc("/documents", enableCors(getDocuments))
+	http.HandleFunc("/health", healthCheck)
 
 	port := os.Getenv("PORT")
-
 	if port == "" {
 		port = "8080"
 	}
 
-	fmt.Println("WebSocket server running on :" + port)
+	log.Println("Server running on :" + port)
 
-	err := http.ListenAndServe(
-		":"+port,
-		nil,
-	)
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	if err != nil {
+	if err := http.ListenAndServe(":"+port, nil); err != nil {
 		log.Fatal(err)
 	}
 }
