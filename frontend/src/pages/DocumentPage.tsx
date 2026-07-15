@@ -9,21 +9,9 @@ function DocumentPage() {
 
   return (
 
-    <div>
-
-      <h1
-        style={{
-          textAlign: 'center',
-          color: 'white',
-          fontSize: '60px'
-        }}
-      >
-        Google Docs
-      </h1>
-
       <Editor roomId={id || 'default'} />
 
-    </div>
+    
   )
 }
 

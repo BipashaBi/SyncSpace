@@ -28,7 +28,7 @@ function HomePage() {
   useEffect(() => {
 
     fetch(
-      'https://syncspace-uw3k.onrender.com/documents'
+      `${import.meta.env.VITE_API_URL}/documents`
     )
 
       .then(res => res.json())

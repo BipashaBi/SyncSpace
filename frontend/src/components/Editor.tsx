@@ -39,6 +39,11 @@ import {
   HistoryPlugin
 } from '@lexical/react/LexicalHistoryPlugin'
 
+// Base URLs come from env so local dev and production
+// use the same code. See .env.local / .env.production.
+const API_URL = import.meta.env.VITE_API_URL
+const WS_URL = import.meta.env.VITE_WS_URL
+
 const theme = {
 
   text: {
@@ -104,7 +109,7 @@ function Editor({
   useEffect(() => {
 
     const socket = new WebSocket(
-      `wss://syncspace-uw3k.onrender.com/ws?room=${roomId}`
+      `${WS_URL}/ws?room=${roomId}`
     )
 
     socketRef.current = socket
@@ -335,17 +340,12 @@ function LoadDocumentPlugin({
     editorRef.current = editor
 
     fetch(
-      `https://syncspace-uw3k.onrender.com/load?roomId=${roomId}`
+      `${API_URL}/load?roomId=${roomId}`
     )
 
       .then(res => res.json())
 
       .then(data => {
-
-        console.log(
-          'Loaded document:',
-          data
-        )
 
         if (data.title) {
 
@@ -435,6 +435,70 @@ function EditorContent({
   const documentTitleRef =
     useRef(documentTitle)
 
+  // Throttle for content broadcasts: send at most once per
+  // THROTTLE_MS, with a trailing send so the final state
+  // always goes out. Prevents shipping the entire document
+  // on every single keystroke.
+  const THROTTLE_MS = 150
+
+  const lastContentSendRef =
+    useRef(0)
+
+  const contentSendTimeoutRef =
+    useRef<number | null>(null)
+
+  const sendContent = (
+    editorJSON: any
+  ) => {
+
+    const message = JSON.stringify({
+
+      type: 'content',
+
+      content: editorJSON,
+
+      user
+    })
+
+    const now = Date.now()
+
+    const elapsed =
+      now - lastContentSendRef.current
+
+    if (contentSendTimeoutRef.current) {
+
+      clearTimeout(
+        contentSendTimeoutRef.current
+      )
+
+      contentSendTimeoutRef.current =
+        null
+    }
+
+    if (elapsed >= THROTTLE_MS) {
+
+      lastContentSendRef.current = now
+
+      socketRef.current?.send(message)
+
+    } else {
+
+      // Trailing send: fire once the window elapses,
+      // carrying the latest state.
+      contentSendTimeoutRef.current =
+        window.setTimeout(() => {
+
+          lastContentSendRef.current =
+            Date.now()
+
+          socketRef.current?.send(
+            message
+          )
+
+        }, THROTTLE_MS - elapsed)
+    }
+  }
+
   useEffect(() => {
 
     documentTitleRef.current =
@@ -466,7 +530,7 @@ function EditorContent({
         if (!content) return
 
         fetch(
-          'https://syncspace-uw3k.onrender.com/save',
+          `${API_URL}/save`,
           {
 
             method: 'POST',
@@ -883,23 +947,7 @@ if (
   )
 }
 
-              const message = {
-
-                type: 'content',
-
-                content: editorJSON,
-
-                user
-              }
-
-              console.log(
-                'Sending content:',
-                message
-              )
-
-              socketRef.current?.send(
-                JSON.stringify(message)
-              )
+              sendContent(editorJSON)
 
               scheduleSave(
                 documentTitleRef.current,
