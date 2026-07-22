@@ -608,7 +608,7 @@ function EditorContent({
         <div
           style={{
 
-            width: '850px',
+            width: 'min(850px, 95vw)',
 
             margin: '0 auto',
 
@@ -616,8 +616,7 @@ function EditorContent({
 
             minHeight: '1100px',
 
-            padding:
-              '80px 90px',
+            padding: 'clamp(16px, 8vw, 80px) clamp(12px, 9vw, 90px)',
 
             boxShadow:
               '0 1px 12px rgba(0,0,0,0.15)',

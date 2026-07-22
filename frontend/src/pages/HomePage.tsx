@@ -25,6 +25,8 @@ function HomePage() {
     setDocuments] =
     useState<any[]>([])
 
+  const [searchQuery, setSearchQuery] = useState('')
+
   useEffect(() => {
 
     fetch(
@@ -93,6 +95,12 @@ function HomePage() {
     }
   ]
 
+  const visibleDocuments = documents.filter(doc =>
+  (doc.title || 'Untitled document')
+    .toLowerCase()
+    .includes(searchQuery.toLowerCase())
+  )
+
   return (
 
     <div
@@ -104,13 +112,8 @@ function HomePage() {
 
       <Sidebar />
 
-      <div
-        style={{
-          marginLeft: '260px'
-        }}
-      >
-
-        <Navbar />
+      <div className="main-content">
+        <Navbar onSearch={setSearchQuery} />
 
         <div
           style={{
@@ -297,7 +300,7 @@ function HomePage() {
               }}
             >
 
-              {documents?.map(doc => (
+              {visibleDocuments.map(doc => (
 
                 <div
 
@@ -451,6 +454,11 @@ function HomePage() {
               ))}
 
             </div>
+{visibleDocuments.length === 0 && documents.length > 0 && (
+  <div style={{ color: '#5f6368', marginTop: '20px' }}>
+    No documents match “{searchQuery}”
+  </div>
+)}
 
           </div>
 
