@@ -1,0 +1,11 @@
+{
+  "name": "syncspace-loadtest",
+  "private": true,
+  "description": "WebSocket concurrency and broadcast-latency test for the SyncSpace backend.",
+  "scripts": {
+    "start": "node loadtest.js"
+  },
+  "dependencies": {
+    "ws": "^8.20.0"
+  }
+}

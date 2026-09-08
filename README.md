@@ -101,3 +101,27 @@ npx wrangler deploy
 
 - No login required — anyone with the document URL can edit it.
 - Free Render instances sleep after inactivity, so the first request may take ~50 seconds to wake the backend.
+
+## Design & limitations
+
+**Target requirements.** Multiple users editing one document concurrently,
+with updates visible to everyone; documents surviving refresh and reconnect;
+sync latency under 200ms.
+
+**How sync works.** Each client serializes its full Lexical editor state and
+broadcasts it over WebSocket, throttled to at most one send per 150ms with a
+trailing send so the final state always lands. The Go server groups clients
+by room and relays messages; it holds no document state of its own.
+
+**Known limitation — conflict resolution.** This is last-write-wins on the
+whole document, not a merge. Two people editing different paragraphs works
+fine. Two people typing inside the same 150ms window means one of them loses
+those keystrokes, and applying a remote update resets the local selection.
+The correct fix is a CRDT (Yjs would drop in here) or operational transforms
+against a server-side authoritative document. LWW was a deliberate tradeoff
+to ship a working editor; it's the first thing I'd replace.
+
+**Not yet handled.** Horizontal scaling — rooms live in process memory, so a
+second backend instance would split a room in two. Redis pub/sub between
+instances is the standard fix.
+
