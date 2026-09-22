@@ -2,68 +2,61 @@ package main
 
 import (
 	"context"
-	"errors"
-	"log"
+	"fmt"
 	"os"
 	"time"
 
-	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-var (
-	mongoClient *mongo.Client
-	dbName      string
-)
+var mongoClient *mongo.Client
 
-var errMissingMongoURI = errors.New("MONGO_URI environment variable not set")
+func connectMongo() {
 
-const (
-	defaultDBName      = "syncspace"
-	documentCollection = "documents"
-)
+	mongoURI := os.Getenv(
+		"MONGO_URI",
+	)
 
-func documents() *mongo.Collection {
-	return mongoClient.Database(dbName).Collection(documentCollection)
-}
+	if mongoURI == "" {
 
-func connectMongo(ctx context.Context) error {
-	uri := os.Getenv("MONGO_URI")
-	if uri == "" {
-		return errMissingMongoURI
+		panic(
+			"MONGO_URI environment variable not set",
+		)
 	}
 
-	dbName = os.Getenv("MONGO_DB")
-	if dbName == "" {
-		dbName = defaultDBName
+	clientOptions := options.Client().
+		ApplyURI(mongoURI)
+
+	client, err := mongo.Connect(
+
+		context.TODO(),
+
+		clientOptions,
+	)
+
+	if err != nil {
+		panic(err)
 	}
 
-	connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(
+
+		context.Background(),
+
+		10*time.Second,
+	)
+
 	defer cancel()
 
-	client, err := mongo.Connect(connectCtx, options.Client().ApplyURI(uri))
+	err = client.Ping(ctx, nil)
+
 	if err != nil {
-		return err
+		panic(err)
 	}
 
-	if err := client.Ping(connectCtx, nil); err != nil {
-		return err
-	}
+	fmt.Println(
+		"Connected to MongoDB",
+	)
 
 	mongoClient = client
-
-	indexCtx, indexCancel := context.WithTimeout(ctx, 10*time.Second)
-	defer indexCancel()
-
-	_, err = documents().Indexes().CreateOne(indexCtx, mongo.IndexModel{
-		Keys:    bson.D{{Key: "roomId", Value: 1}},
-		Options: options.Index().SetUnique(true),
-	})
-	if err != nil {
-		return err
-	}
-
-	log.Printf("connected to MongoDB (database %q)", dbName)
-	return nil
 }

@@ -16,7 +16,4 @@ dist/
 
 # OS files
 .DS_Store
-Thumbs.db"*.exe" 
-"collaborative-editor" 
-*.exe
-collaborative-editor
+Thumbs.db
